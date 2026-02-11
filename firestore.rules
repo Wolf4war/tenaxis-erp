@@ -1,0 +1,239 @@
+/* ============================================
+   TENAXIS - Firestore Security Rules
+   Multi-tenant isolation and RBAC
+   ============================================ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // Helper Functions
+    // ============================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Get user document
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/tenants/$(request.auth.token.tenant_id)/users/$(request.auth.uid));
+    }
+    
+    // Get user role
+    function getUserRole() {
+      return getUserDoc().data.role;
+    }
+    
+    // Check if user belongs to tenant
+    function belongsToTenant(tenantId) {
+      return isAuthenticated() && request.auth.token.tenant_id == tenantId;
+    }
+    
+    // Check if user is admin (any admin level)
+    function isAdmin() {
+      let role = getUserRole();
+      return role in ['super_admin', 'tenant_admin', 'org_admin', 'company_admin'];
+    }
+    
+    // Check if user is tenant admin or higher
+    function isTenantAdmin() {
+      let role = getUserRole();
+      return role in ['super_admin', 'tenant_admin'];
+    }
+    
+    // Check if user is office manager or higher
+    function isOfficeManager() {
+      let role = getUserRole();
+      return role in ['super_admin', 'tenant_admin', 'org_admin', 'company_admin', 'office_manager'];
+    }
+    
+    // Check office access
+    function hasOfficeAccess(officeId) {
+      let userData = getUserDoc().data;
+      // Admins have access to all offices
+      if (isAdmin()) {
+        return true;
+      }
+      // Users can only access their assigned office
+      return userData.office_id == officeId;
+    }
+    
+    // ============================================
+    // Tenant Level Rules
+    // ============================================
+    
+    match /tenants/{tenantId} {
+      // Only authenticated users can read tenant info
+      allow read: if belongsToTenant(tenantId);
+      // Only tenant admins can update tenant settings
+      allow write: if belongsToTenant(tenantId) && isTenantAdmin();
+      
+      // ============================================
+      // Users Collection
+      // ============================================
+      match /users/{userId} {
+        // Users can read their own profile
+        // Admins can read all users in tenant
+        allow read: if belongsToTenant(tenantId) && 
+                       (request.auth.uid == userId || isAdmin());
+        
+        // Users can update their own profile (limited fields)
+        allow update: if belongsToTenant(tenantId) && 
+                         request.auth.uid == userId &&
+                         !request.resource.data.diff(resource.data).affectedKeys()
+                           .hasAny(['role', 'tenant_id', 'organization_id', 'status']);
+        
+        // Admins can create/update/delete users
+        allow create, delete: if belongsToTenant(tenantId) && isAdmin();
+        allow update: if belongsToTenant(tenantId) && isAdmin();
+      }
+      
+      // ============================================
+      // Organizations Collection
+      // ============================================
+      match /organizations/{orgId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if belongsToTenant(tenantId) && isTenantAdmin();
+      }
+      
+      // ============================================
+      // Companies Collection
+      // ============================================
+      match /companies/{companyId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if belongsToTenant(tenantId) && isAdmin();
+      }
+      
+      // ============================================
+      // Offices Collection
+      // ============================================
+      match /offices/{officeId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if belongsToTenant(tenantId) && isAdmin();
+        
+        // Departments within offices
+        match /departments/{deptId} {
+          allow read: if belongsToTenant(tenantId);
+          allow write: if belongsToTenant(tenantId) && isOfficeManager();
+        }
+      }
+      
+      // ============================================
+      // Assets Collection
+      // ============================================
+      match /assets/{assetId} {
+        // Users can read assets in their office or all if admin
+        allow read: if belongsToTenant(tenantId) && 
+                       (isAdmin() || hasOfficeAccess(resource.data.office_id));
+        
+        // Only office managers+ can create/update assets
+        allow create: if belongsToTenant(tenantId) && isOfficeManager();
+        allow update: if belongsToTenant(tenantId) && 
+                         (isAdmin() || hasOfficeAccess(resource.data.office_id));
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        
+        // Asset events subcollection
+        match /events/{eventId} {
+          allow read: if belongsToTenant(tenantId);
+          allow create: if belongsToTenant(tenantId) && isOfficeManager();
+          // Events are immutable - no updates or deletes
+          allow update, delete: if false;
+        }
+      }
+      
+      // ============================================
+      // Consumables Collection
+      // ============================================
+      match /consumables/{itemId} {
+        allow read: if belongsToTenant(tenantId) && 
+                       (isAdmin() || hasOfficeAccess(resource.data.office_id));
+        allow create: if belongsToTenant(tenantId) && isOfficeManager();
+        allow update: if belongsToTenant(tenantId) && 
+                         (isAdmin() || hasOfficeAccess(resource.data.office_id));
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        
+        // Stock transactions subcollection
+        match /transactions/{txId} {
+          allow read: if belongsToTenant(tenantId);
+          allow create: if belongsToTenant(tenantId) && isOfficeManager();
+          // Transactions are immutable
+          allow update, delete: if false;
+        }
+      }
+      
+      // ============================================
+      // Maintenance Tickets Collection
+      // ============================================
+      match /maintenance/{ticketId} {
+        // All authenticated users can read tickets
+        allow read: if belongsToTenant(tenantId);
+        // Regular users can create tickets
+        allow create: if belongsToTenant(tenantId);
+        // Only office managers+ can update tickets
+        allow update: if belongsToTenant(tenantId) && isOfficeManager();
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        
+        // Ticket comments subcollection
+        match /comments/{commentId} {
+          allow read: if belongsToTenant(tenantId);
+          allow create: if belongsToTenant(tenantId);
+          // Users can only update/delete their own comments
+          allow update, delete: if belongsToTenant(tenantId) && 
+                                   resource.data.user_id == request.auth.uid;
+        }
+      }
+      
+      // ============================================
+      // Projects Collection
+      // ============================================
+      match /projects/{projectId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create: if belongsToTenant(tenantId) && isOfficeManager();
+        allow update: if belongsToTenant(tenantId) && isOfficeManager();
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        
+        // Project tasks subcollection
+        match /tasks/{taskId} {
+          allow read: if belongsToTenant(tenantId);
+          allow write: if belongsToTenant(tenantId) && isOfficeManager();
+        }
+      }
+      
+      // ============================================
+      // Vendors Collection
+      // ============================================
+      match /vendors/{vendorId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if belongsToTenant(tenantId) && isAdmin();
+      }
+      
+      // ============================================
+      // Audit Logs Collection
+      // ============================================
+      match /audit_logs/{logId} {
+        // Only admins can read audit logs
+        allow read: if belongsToTenant(tenantId) && isAdmin();
+        // Audit logs are created by the system, not directly by users
+        // Use Firebase Functions for creating audit logs
+        allow write: if false;
+      }
+      
+      // ============================================
+      // Settings Collection
+      // ============================================
+      match /settings/{settingId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if belongsToTenant(tenantId) && isTenantAdmin();
+      }
+    }
+    
+    // ============================================
+    // Deny all other access
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
