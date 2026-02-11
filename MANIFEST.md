@@ -261,7 +261,32 @@ npm run preview
 
 - **Owner**: Khaled Faiz (Super Admin)
 - **Firebase Project**: tenaxis-69a27
-- **Repository**: (To be added after GitHub push)
+- **Repository**: https://github.com/Wolf4war/tenaxis-erp
+
+---
+
+## 🏷️ Versioning
+
+We use [Semantic Versioning](https://semver.org/):
+- **MAJOR.MINOR.PATCH** (e.g., 1.2.3)
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backwards compatible)
+- **PATCH**: Bug fixes
+
+### Version Commands
+```bash
+# Bump patch version (0.1.0 → 0.1.1)
+npm version patch -m "v%s - Description"
+
+# Bump minor version (0.1.0 → 0.2.0)
+npm version minor -m "v%s - Description"
+
+# Bump major version (0.1.0 → 1.0.0)
+npm version major -m "v%s - Description"
+
+# Push with tags
+git push && git push --tags
+```
 
 ---
 
